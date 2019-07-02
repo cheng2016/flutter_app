@@ -30,7 +30,7 @@ class MyApp extends StatelessWidget {
 }
 ```
 
-### Contact Me
+## Contact Me
 
 - Github: github.com/cheng2016
 - Email: mitnick.cheng@outlook.com
