@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag
+        default: v1.0.0
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.38.1"
+          channel: stable
+          cache: true
+
+      - name: Resolve version
+        id: meta
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Enable web and fetch packages
+        run: |
+          flutter config --enable-web
+          flutter pub get
+          flutter create . --platforms=web --project-name namora --org app.namora
+
+      - name: Build Android release APK
+        run: flutter build apk --release
+
+      - name: Build web for GitHub Pages
+        run: flutter build web --release --base-href /flutter_app/
+
+      - name: Tune web for iPad home screen
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("build/web/index.html")
+          text = path.read_text(encoding="utf-8")
+          extra = """
+            <meta name="apple-mobile-web-app-capable" content="yes">
+            <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+            <meta name="apple-mobile-web-app-title" content="Namora">
+            <meta name="mobile-web-app-capable" content="yes">
+          """
+          if "apple-mobile-web-app-capable" not in text:
+              text = text.replace("<head>", "<head>\n" + extra, 1)
+              path.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Package artifacts
+        run: |
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk \
+            "dist/namora-${{ steps.meta.outputs.version }}-release.apk"
+          # Root-relative copy for local/iPad zip (same build, Pages base-href still works on GitHub Pages)
+          (cd build/web && zip -r "../../dist/namora-${{ steps.meta.outputs.version }}-web-ipad.zip" .)
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: namora-${{ steps.meta.outputs.version }}
+          path: dist/*
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Namora ${{ steps.meta.outputs.version }}
+          generate_release_notes: true
+          files: dist/*
+          body: |
+            Namora ${{ steps.meta.outputs.version }} release packages.
+
+            - `namora-${{ steps.meta.outputs.version }}-release.apk` — Android 安装包
+            - `namora-${{ steps.meta.outputs.version }}-web-ipad.zip` — iPad/桌面可打开的 Web 包（需用静态服务器或 GitHub Pages）
+
+            iPad 预览：打开 https://cheng2016.github.io/flutter_app/ ，Safari 分享 → 添加到主屏幕。
+
+      - name: Deploy GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./build/web
+          commit_message: Deploy Namora web preview
